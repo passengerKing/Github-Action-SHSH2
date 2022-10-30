@@ -1,0 +1,158 @@
+name: Auto Save SHSH2
+permissions: write-all # Allow Release 允许发布 release
+env:
+  ## --- required 
+  MODEL: iPhone8,1 # specify device by its model (eg. iPhone8,1)
+  ECID: ab46efcbf71 # must be either DEC or HEX
+  ## --- choosing one of these three below and comment others
+  LATEST: true # if set true, FIRMWARE_VERSION and FIRMWARE_BUILD_ID will become invalid
+  FIRMWARE_VERSION: 15.7 # specify firmware version
+  # FIRMWARE_BUILD_ID: 19H12 # if set this, FIRMWARE_VERSION will become invalid
+  ## ---
+  NO_BOARDBAND: false # Request tickets without baseband. If set true, BOARDBAND will become invalid
+  BOARDBAND: n71ap # recommend set this for iPhone
+  ## ---
+  GEN: "0x1111111111111111" # manually specify generator in format 0x%%16llx
+  APNONCE: "" # required for saving blobs for A12/S4 and newer devices with generator
+  ## --- Enable the following options to use beta firmware
+  BETA: false
+  ## --- Logging
+  LOG_REQ: false # print the TSS request that will be sent to Apple
+  LOG_RSP: false # print the TSS response that comes from Apple
+
+
+on:
+  push:
+    branches:
+      - 'master'
+  schedule:
+    - cron: '20 5 * * 1' # Runs at 05:20 UTC on Mon.
+  workflow_dispatch:
+    inputs:
+      args:
+        description: 'Manual Arguments(Will use args here instead of using env. Use `--ecid` instead of `-e` if you get some error. Do not set `-s` and `--save-path`!)\n\n本程序免费开源，如果你从其他人那付费获得了 Github Action 自动保存 shsh2 的程序，那么恭喜你被骗了！'
+        required: true
+        default: "-d iPhone6,2 -B n53ap --ecid 6F40A4CD908 -l"
+
+jobs:
+  save_shsh2:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: prepare (auto)
+        if: github.event.inputs == 0
+        shell: bash
+        run: |
+          echo "Auto mode.\n本程序免费开源，如果你从其他人那付费获得了 Github Action 自动保存 shsh2 的程序，那么恭喜你被骗了！"
+          tss_arg=""
+
+          if [ -z "${{ env.MODEL }}" ] || [ -z "${{ env.ECID }}" ]; then 
+            echo "::error env.MODEL and env.ECID can't be NULL"
+            exit 1
+          fi
+          if [ -z "${{ env.APNONCE }}" ]; then 
+            echo "::warning env.APNONCE is NULL, If you are using A12/S4 and newer, the blobs may not use. Read more: https://github.com/1Conan/tsschecker#nonce-entangling-apple-a12s4-and-newer"
+          fi
+
+          if [ -n "${{ env.MODEL }}" ]; then
+            tss_arg=$tss_arg" -d "${{ env.MODEL }}
+          fi
+          if [ -n "${{ env.ECID }}" ]; then
+            tss_arg=$tss_arg" --ecid "${{ env.ECID }}
+          fi
+
+          if [ "${{ env.LATEST }}" = "true" ]
+          then
+            tss_arg=$tss_arg" -l "
+          elif [ -n "${{ env.FIRMWARE_BUILD_ID }}" ]
+          then
+            tss_arg=$tss_arg" -Z "${{ env.FIRMWARE_BUILD_ID }}
+          else 
+            tss_arg=$tss_arg" -i "${{ env.FIRMWARE_VERSION }}
+          fi
+
+          if [ "${{ env.NO_BOARDBAND }}" = "true" ]; then
+            tss_arg=$tss_arg" -b "
+          else
+            tss_arg=$tss_arg" -B "${{ env.BOARDBAND }}
+          fi
+
+          if [ -n "${{ env.GEN }}" ]; then
+            tss_arg=$tss_arg" --generator "${{ env.GEN }}
+          fi
+          if [ -n "${{ env.APNONCE }}" ]; then
+            tss_arg=$tss_arg" --apnonce "${{ env.APNONCE }}
+          fi
+
+          if [ "${{ env.BETA }}" = "true" ]; then
+            tss_arg=$tss_arg" --ota --beta "
+          fi
+
+          if [ "${{ env.LOG_REQ }}" = "true" ]; then
+            tss_arg=$tss_arg" --print-tss-request "
+          fi
+          if [ "${{ env.LOG_RSP }}" = "true" ]; then
+            tss_arg=$tss_arg" --print-tss-response "
+          fi
+
+          tss_arg=$tss_arg" -s --save-path .\\blobs "
+
+          echo tssArg="$tss_arg" >> $GITHUB_ENV
+
+
+      - name: prepare (manually)
+        if: github.event.inputs
+        shell: bash
+        run: |
+          echo "Manually run.\n本程序免费开源，如果你从其他人那付费获得了 Github Action 自动保存 shsh2 的程序，那么恭喜你被骗了！"
+          echo ECID=`echo "${{ github.event.inputs.args }}" | awk -F '--ecid' '{print $2}' | awk '{print $1}'` >> $GITHUB_ENV
+          echo tssArg="${{ github.event.inputs.args }} -s --save-path .\\blobs" >> $GITHUB_ENV
+
+      - name: run tsschecker
+        shell: pwsh
+        run: |
+          if(!(Test-Path "blobs")) { mkdir "blobs" }
+          echo ${{ env.tssArg }} "\n本程序免费开源，如果你从其他人那付费获得了 Github Action 自动保存 shsh2 的程序，那么恭喜你被骗了！"
+          .\\tsschecker378.exe ${{ env.tssArg }}
+      
+      - name: get info
+        id: shsh2-info
+        shell: bash
+        run: |
+          output=`ls blobs`
+          if [ -z $output ]; then
+            echo "blobs folder is empty!"
+            exit 1
+          fi
+          firmware=`echo ${output} | awk -F '_' '{print $4}'`
+          echo firmware="${firmware}" >> $GITHUB_OUTPUT
+
+          echo nonce=`echo ${output} | awk -F '_' '{print $5}' | awk -F '.' '{print $1}'` >> $GITHUB_OUTPUT
+
+          echo model=`echo ${output} | awk -F '_' '{print $2}'` >> $GITHUB_OUTPUT
+
+          echo tagName="${firmware}" >> $GITHUB_OUTPUT
+
+          mv "./blobs/"$output "./blobs/"`date +"%Y-%m-%d"`"_"$output
+
+          echo artifactName=$output >> $GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v2
+        with:
+          name: steps.shsh2-info.outputs.artifactName
+          path: blobs/*
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: ${{ success() }}
+        with:
+          tag_name: ${{ steps.shsh2-info.outputs.tagName }}
+          body: >-
+            ${{ format(fromJSON('"ecid: {0}\nmodel: {1}\nfirmware: {2}\nnonce: {3}\n\n\n本程序免费[开源](https://github.com/tom-snow/autosave_SHSH2)，如果你从其他人那付费获得了 Github Action 自动保存 shsh2 的程序，那么恭喜你被骗了！"'), 
+                env.ECID, 
+                steps.shsh2-info.outputs.model, 
+                steps.shsh2-info.outputs.firmware, 
+                steps.shsh2-info.outputs.nonce
+              ) }}
+          files: blobs/*
